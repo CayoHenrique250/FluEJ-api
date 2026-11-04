@@ -1,4 +1,5 @@
 
+import logging
 from dataclasses import dataclass
 
 from fastapi import Depends, Header, HTTPException
@@ -6,10 +7,25 @@ from fastapi import Depends, Header, HTTPException
 from .db import SupabaseRepo, get_repo
 from .security import TokenVerifier, get_verifier
 
-PERFIS = {"presidente", "rh", "projetos",
-          "comercial", "financeiro", "orientador"}
 
-PERFIS_DE_SETOR = {"rh", "projetos", "comercial", "financeiro"}
+logger = logging.getLogger(__name__)
+
+
+PERFIS = {
+    "presidente",
+    "rh",
+    "projetos",
+    "comercial",
+    "financeiro",
+    "orientador",
+}
+
+PERFIS_DE_SETOR = {
+    "rh",
+    "projetos",
+    "comercial",
+    "financeiro",
+}
 
 
 @dataclass
@@ -33,25 +49,77 @@ def get_usuario(
     verifier: TokenVerifier = Depends(get_verifier),
     repo: SupabaseRepo = Depends(get_repo),
 ) -> Usuario:
+
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(
-            401, "Envie o cabeçalho Authorization: Bearer <token>.")
-    claims = verifier.verify(authorization.split(" ", 1)[1].strip())
+            status_code=401,
+            detail="Envie o cabeçalho Authorization: Bearer <token>."
+        )
+
+    token = authorization.split(" ", 1)[1].strip()
+    claims = verifier.verify(token)
+
     user_id = claims.get("sub")
+
+    if not user_id:
+        raise HTTPException(
+            status_code=401,
+            detail="Token sem identificação de usuário."
+        )
+
     linhas = repo.select(
-        "perfis", {"user_id": f"eq.{user_id}", "select": "perfil,setor,nome"})
-    if not linhas or linhas[0].get("perfil") not in PERFIS:
-        raise HTTPException(403, "Usuário sem perfil de acesso configurado.")
+        "perfis",
+        {
+            "user_id": f"eq.{user_id}",
+            "select": "perfil,setor,nome"
+        }
+    )
+
+    perfil_encontrado = (
+        linhas[0].get("perfil") if linhas else None
+    )
+
+    logger.warning(
+        "[AUTENTICACAO] sub=%s | perfil=%s | registro_encontrado=%s",
+        user_id,
+        perfil_encontrado,
+        bool(linhas)
+    )
+
+    if not linhas or perfil_encontrado not in PERFIS:
+        raise HTTPException(
+            status_code=403,
+            detail="Usuário sem perfil de acesso configurado."
+        )
+
     p = linhas[0]
-    return Usuario(user_id=user_id, perfil=p["perfil"], setor=p.get("setor"), nome=p.get("nome"))
+
+    return Usuario(
+        user_id=user_id,
+        perfil=p["perfil"],
+        setor=p.get("setor"),
+        nome=p.get("nome")
+    )
 
 
-def exigir_perfis(usuario: Usuario, permitidos: set[str]) -> None:
+def exigir_perfis(
+    usuario: Usuario,
+    permitidos: set[str]
+) -> None:
+
     if usuario.perfil not in permitidos:
-        raise HTTPException(403, "Seu perfil não tem acesso a este recurso.")
+        raise HTTPException(
+            status_code=403,
+            detail="Seu perfil não tem acesso a este recurso."
+        )
 
 
-def setor_efetivo(usuario: Usuario, pedido: str | None) -> str | None:
+def setor_efetivo(
+    usuario: Usuario,
+    pedido: str | None
+) -> str | None:
+
     if usuario.restrito_ao_setor:
         return usuario.setor
+
     return pedido
