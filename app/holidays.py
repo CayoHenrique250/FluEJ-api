@@ -22,13 +22,15 @@ class HolidayService:
             r = httpx.get(f"{BRASIL_API}/{ano}", timeout=10)
             r.raise_for_status()
             itens = [
-                {"data": f["date"], "nome": f["name"], "tipo": f.get("type", "national")}
+                {"data": f["date"], "nome": f["name"],
+                    "tipo": f.get("type", "national")}
                 for f in r.json()
             ]
         except (httpx.HTTPError, KeyError, ValueError):
-            if hit: 
+            if hit:
                 return hit[1]
-            raise HTTPException(502, "Não foi possível obter os feriados agora.")
+            raise HTTPException(
+                502, "Não foi possível obter os feriados agora.")
         self._cache[ano] = (agora, itens)
         return itens
 

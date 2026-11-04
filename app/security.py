@@ -22,7 +22,8 @@ class TokenVerifier:
             if alg == "HS256":
                 secret = get_settings().supabase_jwt_secret
                 if not secret:
-                    raise HTTPException(401, "Token HS256 recusado: JWT secret não configurado.")
+                    raise HTTPException(
+                        401, "Token HS256 recusado: JWT secret não configurado.")
                 key, algs = secret, ["HS256"]
             else:
                 key = self._client().get_signing_key_from_jwt(token).key

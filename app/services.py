@@ -15,7 +15,7 @@ def periodo_do_mes(hoje: date) -> tuple[str, str]:
     inicio = hoje.replace(day=1)
     fim = (inicio.replace(year=inicio.year + 1, month=1) if inicio.month == 12
            else inicio.replace(month=inicio.month + 1))
-    return inicio.isoformat(), fim.isoformat() 
+    return inicio.isoformat(), fim.isoformat()
 
 
 def membros_ativos(repo: SupabaseRepo, setor: str | None) -> list[dict]:
@@ -45,5 +45,6 @@ def ranking(repo: SupabaseRepo, setor: str | None, inicio: str, fim_exclusivo: s
          "pontos": soma.get(m["id"], 0), "horas": horas(soma.get(m["id"], 0))}
         for m in membros
     ]
-    itens.sort(key=lambda i: (i["pontos"], i["nome"].lower()), reverse=(ordem == "desc"))
+    itens.sort(key=lambda i: (
+        i["pontos"], i["nome"].lower()), reverse=(ordem == "desc"))
     return itens

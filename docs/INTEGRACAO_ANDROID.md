@@ -1,41 +1,97 @@
-# Integração com o app Android (Retrofit)
+# Integração da API FluEJ com o aplicativo Android
 
-Este guia liga o app FluEJ à API **sem mudar o que já funciona**: login, cadastro, inativação e sincronização
-continuam no Supabase (supabase-kt + Room). A API entra só para **consulta**, e o Room guarda o último resultado
-para o app continuar mostrando dados sem internet.
+Este documento descreve como o aplicativo FluEJ consome a API desenvolvida em FastAPI. O foco é a implementação no Android: configuração do Retrofit, envio do token do Supabase, conversão das respostas JSON, persistência temporária com Room e apresentação dos dados nas telas.
 
-## O que muda no app
+A API é utilizada para **consultas**. O fluxo atual de login e as operações de cadastro, edição, inativação, registro de atividades e sincronização de dados continuam sob responsabilidade do aplicativo e do Supabase.
 
-| Onde | O quê | Arquivo |
-|---|---|---|
-| Gradle | 4 dependências | `app/build.gradle.kts` |
-| Debug | liberar `http://` só em debug | `app/src/debug/AndroidManifest.xml` (novo) |
-| `data/api/` | Retrofit, DTOs, cliente, cache, repositório | 6 arquivos novos |
-| Room | tabela `api_cache` | `AppDatabase.kt` (3 linhas) |
-| Sino de notificações (feriados + avisos) | ViewModel + componente reutilizável | 2 arquivos novos |
-| Dashboard do RH | sino real e "Documentos pendentes" reais | `DashboardViewModel.kt` e `DashboardRHScreen.kt` |
+## 1. Visão geral
 
-Nada disso cadastra ou atualiza dados: são só telas de consulta.
+A integração está organizada em camadas. Cada uma tem uma responsabilidade específica:
 
----
-
-## Passo 1 — Dependências
-
-Em `app/build.gradle.kts`, dentro de `dependencies { }`:
-
-```kotlin
-implementation("com.squareup.retrofit2:retrofit:2.11.0")
-implementation("com.squareup.retrofit2:converter-kotlinx-serialization:2.11.0")
-implementation("com.squareup.okhttp3:okhttp:4.12.0")
-implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
+```text
+Tela / Composable
+       |
+       v
+ViewModel
+       |
+       v
+ApiRepository --------> ApiCacheDao (Room)
+       |
+       v
+FluejApi (Retrofit)
+       |
+       v
+ApiClient (OkHttp + token Supabase)
+       |
+       v
+FluEJ API (FastAPI)
+       |
+       +----> Supabase (dados do sistema)
+       |
+       +----> BrasilAPI (feriados nacionais)
 ```
 
-Você já tem `kotlinx-serialization-json` e o plugin de serialização. Faça **Sync Project**.
-Se o Gradle sugerir versões mais novas dessas bibliotecas, pode usá-las.
+| Camada | Responsabilidade |
+|---|---|
+| `ApiConfig` | Define a URL-base da API. |
+| `ApiModels` | Representa as respostas JSON em classes Kotlin. |
+| `ApiClient` | Configura OkHttp, adiciona o token do usuário e cria o Retrofit. |
+| `FluejApi` | Declara os endpoints disponíveis para chamadas Retrofit. |
+| `ApiCache` / `ApiCacheDao` | Armazenam e recuperam respostas no Room. |
+| `ApiRepository` | Centraliza as chamadas e a estratégia de cache. |
+| `ViewModel` | Solicita os dados e disponibiliza estados para a interface. |
+| Composables | Apresentam os dados ao usuário. |
 
-## Passo 2 — Endereço da API em desenvolvimento
+A API não recebe a chave secreta do Supabase pelo Android. O aplicativo envia o access token do usuário autenticado. A chave de acesso privilegiado ao banco fica somente nas variáveis de ambiente do backend.
 
-Crie `app/src/debug/AndroidManifest.xml` (a pasta `debug` fica ao lado de `main`):
+## 2. Endereço da API
+
+A URL de produção configurada para o FluEJ é:
+
+```text
+https://fluej-api.onrender.com/
+```
+
+O endereço deve terminar com `/`, requisito do Retrofit ao combinar a URL-base com os caminhos declarados em `@GET`.
+
+No arquivo `ApiConfig.kt`:
+
+```kotlin
+package com.example.fluej.data.api
+
+object ApiConfig {
+    const val BASE_URL = "https://fluej-api.onrender.com/"
+}
+```
+
+### 2.1 Endereços para desenvolvimento local
+
+Quando o backend estiver sendo executado na máquina de desenvolvimento, o endereço depende de onde o aplicativo está rodando:
+
+| Ambiente | URL-base |
+|---|---|
+| Emulador Android | `http://10.0.2.2:8000/` |
+| Celular físico com `adb reverse` | `http://127.0.0.1:8000/` |
+| Celular físico na mesma rede Wi-Fi | `http://IP-DO-COMPUTADOR:8000/` |
+| Produção no Render | `https://fluej-api.onrender.com/` |
+
+Para usar o celular físico via USB, execute:
+
+```powershell
+adb reverse tcp:8000 tcp:8000
+```
+
+Para acesso pela rede Wi-Fi, inicie o FastAPI ouvindo em `0.0.0.0` e permita a porta 8000 no firewall do computador:
+
+```bash
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+O endereço `10.0.2.2` é específico do emulador Android padrão e não deve ser usado em um aparelho físico.
+
+### 2.2 Tráfego HTTP em desenvolvimento
+
+A produção deve utilizar HTTPS. Caso seja necessário testar com `http://` em ambiente local, a configuração de tráfego sem criptografia deve ficar restrita ao build de desenvolvimento, por exemplo em `src/debug/AndroidManifest.xml`:
 
 ```xml
 <?xml version="1.0" encoding="utf-8"?>
@@ -47,35 +103,156 @@ Crie `app/src/debug/AndroidManifest.xml` (a pasta `debug` fica ao lado de `main`
 </manifest>
 ```
 
-Isso libera `http://` **apenas** em builds de debug. Em produção use `https://`.
+Não habilite tráfego HTTP sem criptografia no build de produção. Confirme também que o `AndroidManifest.xml` principal contém a permissão de internet:
 
-Qual endereço usar (o `localhost` do celular não é o seu computador):
+```xml
+<uses-permission android:name="android.permission.INTERNET" />
+```
 
-| Onde o app roda | `BASE_URL` |
-|---|---|
-| Emulador do Android Studio | `http://10.0.2.2:8000/` |
-| Celular real, via cabo | rode `adb reverse tcp:8000 tcp:8000` e use `http://127.0.0.1:8000/` |
-| Celular real, mesma rede Wi-Fi | `http://IP-DO-SEU-PC:8000/` (a API precisa estar com `--host 0.0.0.0` e o firewall liberado) |
-| Produção | `https://seu-servico.exemplo.com/` |
+## 3. Dependências do projeto
 
-A `BASE_URL` **precisa terminar com `/`**.
+Adicione as dependências abaixo em `app/build.gradle.kts`, caso ainda não estejam declaradas. Se o projeto utiliza um catálogo de versões (`libs.versions.toml`), mantenha as versões centralizadas nele em vez de duplicá-las no arquivo do módulo.
 
-## Passo 3 — Arquivos novos em `data/api/`
+```kotlin
+implementation("com.squareup.retrofit2:retrofit:2.11.0")
+implementation("com.squareup.retrofit2:converter-kotlinx-serialization:2.11.0")
+implementation("com.squareup.okhttp3:okhttp:4.12.0")
+implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
+```
 
-Crie a pasta `app/src/main/java/com/example/fluej/data/api/`.
+A integração também depende do `kotlinx-serialization-json` e do plugin Kotlin Serialization. O projeto já utiliza serialização Kotlin em seus modelos. Após alterar as dependências, sincronize o Gradle.
 
-### `ApiConfig.kt`
+## 4. Configuração do Retrofit e do OkHttp
+
+### 4.1 `ApiClient.kt`
+
+O `ApiClient` cria uma instância compartilhada de OkHttp e Retrofit. O interceptor consulta a sessão Supabase e adiciona o access token do usuário ao cabeçalho `Authorization`.
+
+O código abaixo mantém o log no nível `BASIC`, adequado para acompanhar método, URL e status HTTP sem registrar o corpo das respostas. O cabeçalho `Authorization` permanece protegido.
+
 ```kotlin
 package com.example.fluej.data.api
 
-object ApiConfig {
-    // Emulador: 10.0.2.2. Veja a tabela do Passo 2 para celular real e produção.
-    const val BASE_URL = "http://10.0.2.2:8000/"
+import com.example.fluej.data.supabase
+import io.github.jan.supabase.gotrue.auth
+import kotlinx.serialization.json.Json
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.logging.HttpLoggingInterceptor
+import retrofit2.Retrofit
+import retrofit2.converter.kotlinx.serialization.asConverterFactory
+import java.util.concurrent.TimeUnit
+
+object ApiClient {
+
+    val json = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+    }
+
+    private val http: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(40, TimeUnit.SECONDS)
+            .addInterceptor { chain ->
+                val token = supabase.auth.currentAccessTokenOrNull()
+
+                val request = chain.request().newBuilder().apply {
+                    if (!token.isNullOrBlank()) {
+                        header("Authorization", "Bearer $token")
+                    }
+                }.build()
+
+                chain.proceed(request)
+            }
+            .addInterceptor(
+                HttpLoggingInterceptor().apply {
+                    level = HttpLoggingInterceptor.Level.BASIC
+                    redactHeader("Authorization")
+                }
+            )
+            .build()
+    }
+
+    val api: FluejApi by lazy {
+        Retrofit.Builder()
+            .baseUrl(ApiConfig.BASE_URL)
+            .client(http)
+            .addConverterFactory(
+                json.asConverterFactory("application/json".toMediaType())
+            )
+            .build()
+            .create(FluejApi::class.java)
+    }
 }
 ```
 
-### `ApiModels.kt`
-Os nomes em `snake_case` do JSON são mapeados com `@SerialName`, como você já faz no `Member`.
+O interceptor não cria uma sessão. Ele utiliza a sessão já estabelecida pelo fluxo de autenticação do aplicativo. Portanto, as chamadas protegidas devem ocorrer depois do login e enquanto houver uma sessão válida.
+
+**Não coloque `SUPABASE_SERVICE_KEY`, `sb_secret_` ou a antiga `service_role` no Android.** Essas credenciais pertencem exclusivamente ao backend. O token enviado pelo aplicativo representa o usuário que realizou o login.
+
+Evite alterar o nível de log para `BODY` em builds distribuídos. O corpo das respostas pode conter dados de membros e informações internas. Se for necessário usá-lo temporariamente em desenvolvimento, remova-o depois do diagnóstico.
+
+### 4.2 `FluejApi.kt`
+
+A interface Retrofit declara os caminhos HTTP disponíveis. A versão atual do arquivo contém estas operações:
+
+```kotlin
+package com.example.fluej.data.api
+
+import retrofit2.http.GET
+import retrofit2.http.Path
+import retrofit2.http.Query
+
+interface FluejApi {
+
+    @GET("v1/notificacoes")
+    suspend fun notificacoes(): NotificacoesDto
+
+    @GET("v1/documentos-pendentes")
+    suspend fun documentosPendentes(): List<DocumentoPendenteDto>
+
+    @GET("v1/feriados/proximos")
+    suspend fun feriadosProximos(
+        @Query("dias") dias: Int = 30
+    ): List<FeriadoDto>
+
+    @GET("v1/feriados/{ano}")
+    suspend fun feriados(
+        @Path("ano") ano: Int
+    ): List<FeriadoDto>
+
+    @GET("v1/painel")
+    suspend fun painel(): PainelDto
+
+    @GET("v1/ranking")
+    suspend fun ranking(
+        @Query("ordem") ordem: String = "asc"
+    ): RankingDto
+}
+```
+
+As funções são `suspend` e devem ser chamadas em uma coroutine, normalmente a partir de um `ViewModel` ou de um repositório utilizado por ele.
+
+**Limitação atual da interface:** a API também aceita `setor`, `inicio` e `fim` em `/v1/ranking`, mas a função acima envia somente `ordem`. Para enviar filtros adicionais pelo Android, amplie a assinatura:
+
+```kotlin
+@GET("v1/ranking")
+suspend fun ranking(
+    @Query("setor") setor: String? = null,
+    @Query("inicio") inicio: String? = null,
+    @Query("fim") fim: String? = null,
+    @Query("ordem") ordem: String = "asc"
+): RankingDto
+```
+
+O backend aplica o período personalizado quando `inicio` e `fim` são enviados juntos. Recomenda-se informar ambos ou não informar nenhum.
+
+## 5. Modelos de resposta (DTOs)
+
+Os DTOs representam os objetos JSON enviados pela API. Os nomes dos campos seguem o contrato do backend. Quando o JSON utiliza `snake_case` e a propriedade Kotlin utiliza `camelCase`, use `@SerialName`.
+
+Exemplo das classes utilizadas pelas rotas disponíveis:
 
 ```kotlin
 package com.example.fluej.data.api
@@ -86,10 +263,10 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class NotificacaoDto(
     val id: String,
-    val tipo: String,            // "aviso" ou "feriado"
+    val tipo: String,
     val titulo: String,
     val mensagem: String = "",
-    val data: String = ""        // yyyy-MM-dd
+    val data: String = ""
 )
 
 @Serializable
@@ -113,8 +290,6 @@ data class FeriadoDto(
     val tipo: String = "national",
     @SerialName("faltam_dias") val faltamDias: Int? = null
 )
-
-// Os DTOs abaixo ainda não têm tela; já ficam prontos para os próximos dashboards.
 
 @Serializable
 data class RankingItemDto(
@@ -154,102 +329,15 @@ data class PainelDto(
 )
 ```
 
-### `FluejApi.kt`
-A interface do Retrofit: só `GET`, com funções `suspend`.
+O `ignoreUnknownKeys = true` configurado no `ApiClient` permite que o aplicativo ignore campos adicionais enviados pelo backend. Isso não elimina a necessidade de manter os DTOs alinhados aos campos obrigatórios das respostas.
 
-```kotlin
-package com.example.fluej.data.api
+## 6. Persistência local com Room
 
-import retrofit2.http.GET
-import retrofit2.http.Path
-import retrofit2.http.Query
+A camada de cache permite recuperar a última resposta salva quando uma chamada não pode ser concluída. O cache não substitui o Supabase nem representa a fonte oficial dos dados.
 
-interface FluejApi {
+### 6.1 Entidade e DAO
 
-    @GET("v1/notificacoes")
-    suspend fun notificacoes(): NotificacoesDto
-
-    @GET("v1/documentos-pendentes")
-    suspend fun documentosPendentes(): List<DocumentoPendenteDto>
-
-    @GET("v1/feriados/proximos")
-    suspend fun feriadosProximos(@Query("dias") dias: Int = 30): List<FeriadoDto>
-
-    @GET("v1/feriados/{ano}")
-    suspend fun feriados(@Path("ano") ano: Int): List<FeriadoDto>
-
-    @GET("v1/painel")
-    suspend fun painel(): PainelDto
-
-    @GET("v1/ranking")
-    suspend fun ranking(@Query("ordem") ordem: String = "asc"): RankingDto
-}
-```
-
-### `ApiClient.kt`
-Cria o Retrofit uma única vez e coloca **o token do Supabase** em toda chamada. O token vem de
-`supabase.auth.currentAccessTokenOrNull()`, e o supabase-kt renova sozinho quando ele expira.
-
-```kotlin
-package com.example.fluej.data.api
-
-import com.example.fluej.data.supabase
-import io.github.jan.supabase.gotrue.auth
-import kotlinx.serialization.json.Json
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.logging.HttpLoggingInterceptor
-import retrofit2.Retrofit
-import retrofit2.converter.kotlinx.serialization.asConverterFactory
-import java.util.concurrent.TimeUnit
-
-object ApiClient {
-
-    val json = Json {
-        ignoreUnknownKeys = true
-        encodeDefaults = true
-    }
-
-    private val http: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            // Timeout longo: serviços gratuitos "dormem" e a 1ª chamada pode demorar.
-            .readTimeout(40, TimeUnit.SECONDS)
-            .addInterceptor { chain ->
-                val token = supabase.auth.currentAccessTokenOrNull()
-                val request = chain.request().newBuilder().apply {
-                    if (token != null) header("Authorization", "Bearer $token")
-                }.build()
-                chain.proceed(request)
-            }
-            .addInterceptor(
-                // BASIC mostra só método, URL e status; nunca o token.
-                HttpLoggingInterceptor().apply {
-                    level = HttpLoggingInterceptor.Level.BASIC
-                    redactHeader("Authorization")
-                }
-            )
-            .build()
-    }
-
-    val api: FluejApi by lazy {
-        Retrofit.Builder()
-            .baseUrl(ApiConfig.BASE_URL)
-            .client(http)
-            .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
-            .build()
-            .create(FluejApi::class.java)
-    }
-}
-```
-
-> O conversor `converter-kotlinx-serialization` é o oficial do Retrofit, por isso o import é
-> `retrofit2.converter.kotlinx.serialization.asConverterFactory`. Tutoriais antigos usam o pacote
-> `com.jakewharton...`, que não funciona com essa dependência.
-
-### `ApiCache.kt` (entidade e DAO do Room)
-Guarda a última resposta de cada chamada em texto JSON. A chave inclui o id do usuário, então dois usuários
-no mesmo aparelho nunca veem o cache um do outro.
+No arquivo `ApiCache.kt`:
 
 ```kotlin
 package com.example.fluej.data.api
@@ -270,6 +358,7 @@ data class ApiCache(
 
 @Dao
 interface ApiCacheDao {
+
     @Query("SELECT * FROM api_cache WHERE chave = :chave")
     suspend fun buscar(chave: String): ApiCache?
 
@@ -281,9 +370,35 @@ interface ApiCacheDao {
 }
 ```
 
-### `ApiRepository.kt`
-Mesma ideia do resto do app: tenta a rede; se der certo, guarda no Room; se falhar, devolve o último dado salvo.
-Só dá erro se não houver rede **e** nada salvo.
+A coluna `chave` identifica o resultado armazenado; `json` guarda a resposta serializada; `atualizadoEm` registra o instante da gravação em milissegundos desde a época Unix.
+
+### 6.2 Registrar no `AppDatabase.kt`
+
+Inclua `ApiCache` na lista de entidades, exponha o DAO e incremente a versão do banco Room. O número deve ser a versão atual do seu projeto acrescida de uma unidade.
+
+No `@Database`, inclua `ApiCache::class` na lista de entidades e incremente a versão atual do banco em uma unidade. Preserve todas as entidades e declarações de DAO que já existem.
+
+Exemplo das linhas que precisam estar presentes:
+
+```kotlin
+entities = [
+    Member::class,
+    Activity::class,
+    Project::class,
+    ProjectMember::class,
+    ApiCache::class
+]
+
+abstract fun apiCacheDao(): ApiCacheDao
+```
+
+Não substitua os outros DAOs nem a configuração atual do banco. A inclusão de uma entidade exige uma migração compatível com a estratégia adotada pelo projeto. Se o banco utiliza `fallbackToDestructiveMigration()`, uma migração destrutiva pode apagar dados locais ainda não sincronizados. Como o FluEJ mantém dados operacionais localmente, prefira uma migração Room explícita e faça backup/teste antes de atualizar a versão em produção.
+
+### 6.3 Repositório e estratégia de cache
+
+O `ApiRepository` centraliza as consultas utilizadas pelas telas e grava a resposta após uma chamada bem-sucedida.
+
+A implementação atual é:
 
 ```kotlin
 package com.example.fluej.data.api
@@ -295,8 +410,8 @@ import kotlinx.serialization.serializer
 
 data class ApiResultado<T>(
     val dados: T,
-    val deCache: Boolean,            // true = veio do aparelho (sem rede ou API fora do ar)
-    val atualizadoEm: Long? = null   // quando o cache foi salvo
+    val deCache: Boolean,
+    val atualizadoEm: Long? = null
 )
 
 class ApiRepository(
@@ -305,13 +420,17 @@ class ApiRepository(
 ) {
     private val json = ApiClient.json
 
-    suspend fun notificacoes() = comCache("notificacoes") { api.notificacoes() }
+    suspend fun notificacoes() =
+        comCache("notificacoes") { api.notificacoes() }
 
-    suspend fun documentosPendentes() = comCache("documentos") { api.documentosPendentes() }
+    suspend fun documentosPendentes() =
+        comCache("documentos") { api.documentosPendentes() }
 
-    suspend fun painel() = comCache("painel") { api.painel() }
+    suspend fun painel() =
+        comCache("painel") { api.painel() }
 
-    suspend fun ranking(ordem: String = "asc") = comCache("ranking_$ordem") { api.ranking(ordem) }
+    suspend fun ranking(ordem: String = "asc") =
+        comCache("ranking_$ordem") { api.ranking(ordem) }
 
     private suspend inline fun <reified T> comCache(
         chave: String,
@@ -319,12 +438,17 @@ class ApiRepository(
     ): ApiResultado<T> {
         val usuario = supabase.auth.currentUserOrNull()?.id.orEmpty()
         val chaveFinal = "$usuario:$chave"
+
         return try {
             val dados = buscar()
             cacheDao.salvar(
-                ApiCache(chaveFinal, json.encodeToString(serializer<T>(), dados), System.currentTimeMillis())
+                ApiCache(
+                    chave = chaveFinal,
+                    json = json.encodeToString(serializer<T>(), dados),
+                    atualizadoEm = System.currentTimeMillis()
+                )
             )
-            ApiResultado(dados, deCache = false)
+            ApiResultado(dados = dados, deCache = false)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -339,38 +463,23 @@ class ApiRepository(
 }
 ```
 
-## Passo 4 — Room: registrar a tabela de cache
+A chave do cache inclui o ID do usuário autenticado (`usuario:chave`). Isso separa os resultados de usuários diferentes no mesmo aparelho.
 
-Em `AppDatabase.kt`, três mudanças:
+**Comportamento que deve ser considerado na manutenção:** a implementação acima tenta utilizar o cache para qualquer `Exception`, não apenas para falhas de conexão. Portanto, ela também pode apresentar dados antigos se a chamada retornar HTTP 401 ou 403. Para uma versão mais rigorosa, trate `HttpException` de autenticação/autorização separadamente e permita o fallback somente para falhas de rede e, conforme a regra do produto, erros temporários do servidor. Ao encerrar a sessão, avalie também limpar os dados locais do usuário ou manter a separação por ID, conforme a política de privacidade do aplicativo.
+
+Atualmente, o repositório expõe métodos para notificações, documentos pendentes, painel e ranking. A interface `FluejApi` já declara as consultas de feriados, mas elas ainda não possuem métodos correspondentes no `ApiRepository`. A rota de desempenho de membro também ainda não está declarada na interface Retrofit apresentada neste guia.
+
+## 7. Consumo dos dados nas telas
+
+As chamadas devem ser feitas fora da thread principal. O fluxo recomendado é: o `ViewModel` chama o repositório em `viewModelScope`, atualiza o estado e a interface observa esse estado.
+
+### 7.1 Notificações
+
+A rota `GET /v1/notificacoes` retorna uma estrutura com `total` e `itens`. Cada item possui `id`, `tipo`, `titulo`, `mensagem` e `data`. O campo `tipo` assume os valores `aviso` ou `feriado`.
+
+Um `ViewModel` pode manter os dados e os estados de carregamento, erro e origem do resultado:
 
 ```kotlin
-import com.example.fluej.data.api.ApiCache
-import com.example.fluej.data.api.ApiCacheDao
-
-@Database(
-    entities = [Member::class, Activity::class, Project::class, ProjectMember::class, ApiCache::class],
-    version = /* a versão atual + 1 */,
-    exportSchema = false
-)
-abstract class AppDatabase : RoomDatabase() {
-    // ... os DAOs que você já tem
-    abstract fun apiCacheDao(): ApiCacheDao
-    // ... companion object igual
-}
-```
-
-Como o banco usa `fallbackToDestructiveMigration()`, ele é recriado e os dados voltam na sincronização
-(pendentes não enviados ainda seriam perdidos: abra o app online antes de atualizar).
-
-## Passo 5 — O sino com feriados e avisos
-
-A API já entrega, em `/v1/notificacoes`, os avisos do seu setor **e** os feriados nacionais que estão chegando.
-O sino fica como um componente que qualquer dashboard pode reaproveitar.
-
-### `NotificacoesViewModel.kt` (em `ui/viewmodels`)
-```kotlin
-package com.example.fluej.ui.viewmodels
-
 import android.app.Application
 import android.util.Log
 import androidx.compose.runtime.getValue
@@ -384,16 +493,23 @@ import com.example.fluej.data.api.NotificacaoDto
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
-class NotificacoesViewModel(application: Application) : AndroidViewModel(application) {
+class NotificacoesViewModel(
+    application: Application
+) : AndroidViewModel(application) {
 
-    private val repository = ApiRepository(AppDatabase.getDatabase(application).apiCacheDao())
+    private val repository = ApiRepository(
+        AppDatabase.getDatabase(application).apiCacheDao()
+    )
 
     var itens by mutableStateOf<List<NotificacaoDto>>(emptyList())
         private set
+
     var carregando by mutableStateOf(false)
         private set
+
     var offline by mutableStateOf(false)
         private set
+
     var erro by mutableStateOf<String?>(null)
         private set
 
@@ -408,7 +524,7 @@ class NotificacoesViewModel(application: Application) : AndroidViewModel(applica
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.e("ApiErro", "Notificações: ${e.message}", e)
+                Log.e("ApiErro", "Falha ao carregar notificações", e)
                 erro = "Não foi possível carregar as notificações."
             } finally {
                 carregando = false
@@ -418,244 +534,212 @@ class NotificacoesViewModel(application: Application) : AndroidViewModel(applica
 }
 ```
 
-### `SinoNotificacoes.kt` (em `ui/components`)
-O sino mostra um selo com a quantidade e, ao tocar, abre uma guia (bottom sheet) com a lista. Os feriados
-aparecem com ícone de calendário e os avisos com ícone de informação.
+O `SinoNotificacoes.kt` pode observar `itens`, `carregando`, `offline` e `erro` para montar o badge e a lista. Se o ViewModel já existir no projeto, mantenha sua implementação e adapte somente os estados e a chamada ao repositório necessários.
 
-```kotlin
-package com.example.fluej.ui.components
+A data recebida está no formato `AAAA-MM-DD`. A formatação para exibição deve ser feita na interface, sem alterar o valor original utilizado como dado.
 
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.DateRange
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Notifications
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.fluej.data.api.NotificacaoDto
-import com.example.fluej.ui.theme.*
-import com.example.fluej.ui.viewmodels.NotificacoesViewModel
+### 7.2 Documentos pendentes
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun SinoNotificacoes(viewModel: NotificacoesViewModel = viewModel()) {
-    var aberto by remember { mutableStateOf(false) }
+A rota `GET /v1/documentos-pendentes` retorna uma lista. Cada elemento contém:
 
-    LaunchedEffect(Unit) { viewModel.atualizar() }
+- `id`: identificador do registro;
+- `setor`: setor ao qual o documento pertence;
+- `titulo`: nome do documento;
+- `quantidade`: quantidade pendente.
 
-    IconButton(onClick = { aberto = true }) {
-        BadgedBox(
-            badge = {
-                if (viewModel.itens.isNotEmpty()) {
-                    Badge { Text(viewModel.itens.size.toString()) }
-                }
-            }
-        ) {
-            Icon(Icons.Default.Notifications, contentDescription = "Notificações", tint = TextPrimary)
-        }
-    }
+O backend já aplica o filtro de setor de acordo com o perfil. A tela não deve tentar substituir essa autorização por um filtro exclusivamente local. O `DashboardViewModel` pode chamar `repository.documentosPendentes()` e disponibilizar a lista para o dashboard do RH.
 
-    if (aberto) {
-        ModalBottomSheet(
-            onDismissRequest = { aberto = false },
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            containerColor = SurfaceLight
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp)
-                    .padding(bottom = 24.dp)
-            ) {
-                Text("Notificações", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = TextPrimary)
-                if (viewModel.offline) {
-                    Text("Mostrando dados salvos no aparelho.", fontSize = 11.sp, color = TextSecondary)
-                }
-                Spacer(modifier = Modifier.height(12.dp))
-
-                when {
-                    viewModel.carregando && viewModel.itens.isEmpty() ->
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-
-                    viewModel.erro != null && viewModel.itens.isEmpty() -> {
-                        Text(viewModel.erro.orEmpty(), color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
-                        TextButton(onClick = { viewModel.atualizar() }) { Text("Tentar novamente") }
-                    }
-
-                    viewModel.itens.isEmpty() ->
-                        Text("Nenhuma notificação por enquanto.", fontSize = 13.sp, color = TextSecondary)
-
-                    else -> LazyColumn(
-                        modifier = Modifier.heightIn(max = 420.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        items(viewModel.itens, key = { it.id }) { NotificacaoItem(it) }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun NotificacaoItem(item: NotificacaoDto) {
-    Card(
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = CardBackground),
-        border = BorderStroke(1.dp, GrayBorder)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = if (item.tipo == "feriado") Icons.Default.DateRange else Icons.Default.Info,
-                contentDescription = null,
-                tint = TextPrimary,
-                modifier = Modifier.size(22.dp)
-            )
-            Spacer(modifier = Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(item.titulo, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = TextPrimary)
-                if (item.mensagem.isNotBlank()) {
-                    Text(item.mensagem, fontSize = 11.sp, color = TextSecondary)
-                }
-            }
-            Text(dataCurta(item.data), fontSize = 11.sp, color = TextSecondary)
-        }
-    }
-}
-
-/** "2026-11-15" -> "15/11" */
-private fun dataCurta(iso: String): String {
-    val p = iso.split("-")
-    return if (p.size == 3) "${p[2]}/${p[1]}" else iso
-}
-```
-
-## Passo 6 — Dashboard do RH
-
-### `DashboardViewModel.kt`
-Adicione o repositório e a lista de documentos. A busca na API roda **separada** da sincronização do Supabase,
-para uma API lenta ou fora do ar nunca travar o resto do dashboard.
-
-```kotlin
-// imports novos
-import android.util.Log
-import com.example.fluej.data.api.ApiRepository
-import com.example.fluej.data.api.DocumentoPendenteDto
-import kotlinx.coroutines.CancellationException
-
-// junto dos outros repositórios
-private val apiRepository = ApiRepository(db.apiCacheDao())
-
-// junto das outras variáveis de estado
-var documentos by mutableStateOf<List<DocumentoPendenteDto>>(emptyList())
-    private set
-
-// dentro de atualizar(): chame no começo da função, antes do viewModelScope.launch existente
-fun atualizar() {
-    carregarDocumentos()
-    // ... o restante do atualizar() continua igual
-}
-
-private fun carregarDocumentos() {
-    viewModelScope.launch {
-        try {
-            documentos = apiRepository.documentosPendentes().dados
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.e("ApiErro", "Documentos pendentes: ${e.message}", e)
-        }
-    }
-}
-```
-
-### `DashboardRHScreen.kt`
-Duas trocas.
-
-**a) O sino**, no `actions` da barra superior. Troque o `IconButton` do sino (o que chamava `emBreve`) por
-`SinoNotificacoes()` e mantenha o botão **Sair**:
-
-```kotlin
-actions = {
-    SinoNotificacoes()
-    TextButton(onClick = onLogout) {
-        Text("Sair", color = TextPrimary)
-    }
-}
-```
-Adicione o import `com.example.fluej.ui.components.SinoNotificacoes`.
-
-**b) Os documentos pendentes.** Troque as duas linhas mockadas
-(`DocumentoPendenteRow("Termos de voluntariado", 2)` e `DocumentoPendenteRow("Termos de encerramento", 5)`) por:
+Exemplo de apresentação dos dados:
 
 ```kotlin
 if (viewModel.documentos.isEmpty()) {
-    Text("Nenhum documento pendente.", fontSize = 13.sp, color = TextSecondary)
+    Text("Nenhum documento pendente.")
 } else {
-    viewModel.documentos.forEach { DocumentoPendenteRow(it.titulo, it.quantidade) }
+    viewModel.documentos.forEach { documento ->
+        DocumentoPendenteRow(
+            documento.titulo,
+            documento.quantidade
+        )
+    }
 }
 ```
 
-A API já devolve só os documentos do setor do usuário, então não precisa filtrar no app.
+O trecho pressupõe que `documentos` seja uma propriedade de estado do ViewModel e que `DocumentoPendenteRow` seja o componente visual utilizado pelo dashboard.
 
-## Passo 7 — Reaproveitar nos outros dashboards
+### 7.3 Painel e ranking
 
-Em cada dashboard novo (Presidente, Orientador, gestores), o sino é **uma linha** na barra superior:
+O `ApiRepository` já disponibiliza `painel()` e `ranking(ordem)`. As respostas podem ser utilizadas nas telas de dashboard quando essas funcionalidades forem integradas.
+
+O painel contém os indicadores do mês atual, enquanto o ranking contém os membros ativos ordenados pela pontuação. A regra de conversão definida no backend é:
+
+```text
+60 pontos = 1 hora
+horas = pontos / 60
+```
+
+O Android deve apresentar o valor `horas` recebido do backend, sem recalcular de maneira diferente. Se a tela precisar filtrar o ranking por setor ou período, atualize a assinatura Retrofit e o método correspondente no repositório para encaminhar os parâmetros suportados pela API.
+
+### 7.4 Consulta de feriados
+
+A interface `FluejApi` já possui `feriadosProximos(dias)` e `feriados(ano)`. No código atual apresentado, essas funções ainda são chamadas diretamente pela interface Retrofit; o `ApiRepository` não possui métodos com cache para elas.
+
+Para centralizar as chamadas e aplicar a mesma estratégia de cache, podem ser incluídos no repositório:
 
 ```kotlin
-actions = {
-    SinoNotificacoes()
-    TextButton(onClick = onLogout) { Text("Sair", color = TextPrimary) }
-}
+suspend fun feriadosProximos(dias: Int = 30) =
+    comCache("feriados_proximos_$dias") {
+        api.feriadosProximos(dias)
+    }
+
+suspend fun feriados(ano: Int) =
+    comCache("feriados_$ano") {
+        api.feriados(ano)
+    }
 ```
 
-Isso vale também para o `DashboardEmBreveScreen` que já existe.
+Esses métodos são uma extensão sugerida; só devem ser documentados como disponíveis depois de adicionados ao `ApiRepository` do projeto.
 
-## Passo 8 — Testar
+### 7.5 Desempenho de um membro
 
-1. Suba a API (veja o README) e confirme `http://localhost:8000/health`.
-2. No Supabase, rode `sql/001_tabelas_da_api.sql` (já traz um aviso e documentos de exemplo para o RH).
-3. Rode o app (emulador: `BASE_URL = "http://10.0.2.2:8000/"`) e entre com o usuário do RH.
-4. **Sino:** deve aparecer o selo com a quantidade. Ao tocar, aparecem o aviso "Reunião geral" e, se algum
-   feriado nacional estiver dentro da janela de `DIAS_AVISO_FERIADO` dias, ele também.
-5. **Documentos pendentes:** deve mostrar os números que estão na tabela `documentos_pendentes`. Edite no
-   Table Editor do Supabase, volte ao dashboard e confira que mudou.
-6. **Offline:** com tudo já carregado uma vez, ative o modo avião e reabra o dashboard. O sino deve mostrar
-   "Mostrando dados salvos no aparelho." e os documentos devem continuar aparecendo.
-7. **Permissão:** entre com o usuário de Projetos. Ele não deve ver os documentos nem os avisos do RH.
+O backend disponibiliza `GET /v1/membros/{membro_id}/desempenho?meses=6`, mas a interface Retrofit e os DTOs apresentados ainda não incluem essa operação. Para integrá-la, será necessário:
 
-## Problemas comuns
+1. criar DTOs que representem `membro`, `total_pontos`, `total_horas`, `pontos_por_mes` e `projetos`;
+2. declarar a função Retrofit com `@Path("membro_id")` e `@Query("meses")`;
+3. criar o método correspondente no `ApiRepository`;
+4. consumir o resultado em um ViewModel da tela de detalhes do membro.
 
-| Sintoma | Causa provável |
-|---|---|
-| `Cleartext HTTP traffic not permitted` | faltou o `AndroidManifest.xml` da pasta `debug` (Passo 2), ou está em build release |
-| `Failed to connect to /10.0.2.2:8000` | API fora do ar, ou subiu sem `--host 0.0.0.0` (celular real) |
-| `java.lang.IllegalArgumentException: baseUrl must end in /` | faltou a barra final na `BASE_URL` |
-| `HTTP 401` | token ausente ou expirado: confira se o login foi feito e veja o Logcat com `ApiErro` |
-| `HTTP 403` "sem perfil de acesso" | o usuário não tem linha na tabela `perfis` |
-| `HTTP 502` | a API não conseguiu falar com o Supabase: confira `SUPABASE_URL` e `SUPABASE_SERVICE_KEY` |
-| Primeira chamada demora muito | serviço gratuito "dormindo"; as seguintes são rápidas |
-| `Unresolved reference: asConverterFactory` | import errado: use `retrofit2.converter.kotlinx.serialization.asConverterFactory` |
+O parâmetro `meses` aceita valores de 1 a 24 e, no backend atual, limita a quantidade de meses com registros apresentada em `pontos_por_mes`. O total de pontos retornado considera o histórico consultado pelo serviço, não apenas os meses exibidos.
 
-## Próximos passos (a API já tem as rotas)
+## 8. Endpoints e integração no Android
 
-- **Dashboard do Presidente e do Orientador:** `ApiRepository.painel()` e `ranking()` já estão prontos.
-  Falta só a tela e um `PainelViewModel`, seguindo o mesmo molde do `NotificacoesViewModel`.
-- **Detalhe do membro** (ao tocar num membro): `GET /v1/membros/{id}/desempenho`.
-- **Calendário de feriados:** `GET /v1/feriados/{ano}`.
-- **Registro de pontos** é uma tela de cadastro; por isso continua no Supabase, e não na API.
+A tabela diferencia o que o backend oferece do que está declarado nas classes Kotlin apresentadas neste documento.
+
+| Endpoint | Finalidade | Situação no Android descrito aqui |
+|---|---|---|
+| `GET /health` | Verificar disponibilidade da API | Verificação externa; não exige Retrofit autenticado |
+| `GET /v1/notificacoes` | Avisos e feriados próximos | Declarado no Retrofit e no Repository |
+| `GET /v1/documentos-pendentes` | Pendências por setor | Declarado no Retrofit e no Repository |
+| `GET /v1/feriados/proximos` | Feriados nos próximos dias | Declarado no Retrofit; falta método no Repository |
+| `GET /v1/feriados/{ano}` | Feriados de um ano | Declarado no Retrofit; falta método no Repository |
+| `GET /v1/painel` | Indicadores do mês | Declarado no Retrofit e no Repository |
+| `GET /v1/ranking` | Ranking de membros ativos | Declarado no Retrofit e no Repository; filtros adicionais não estão mapeados na assinatura atual |
+| `GET /v1/membros/{membro_id}/desempenho` | Histórico de um membro | Ainda precisa ser declarado no Retrofit, nos DTOs e no Repository |
+
+A presença de uma função na interface Retrofit não significa, por si só, que a tela correspondente já esteja implementada ou que a consulta esteja sendo chamada pelo aplicativo.
+
+## 9. Autenticação e permissões
+
+Todas as rotas sob `/v1` exigem um access token válido do Supabase. A rota `/health` é a exceção.
+
+O cabeçalho enviado pelo Android deve ter este formato:
+
+```http
+Authorization: Bearer ACCESS_TOKEN_DO_USUARIO
+```
+
+O token deve ser obtido da sessão do usuário autenticado. Não reutilize a chave secreta do backend e não grave tokens em logs, arquivos de configuração ou no repositório Git.
+
+O backend consulta a tabela `perfis` para identificar o perfil e o setor do usuário. Os valores aceitos são `presidente`, `rh`, `projetos`, `comercial`, `financeiro` e `orientador`.
+
+A interface pode ocultar recursos que o perfil não utiliza, mas a autorização efetiva sempre é feita pelo backend. Não considere uma validação visual no Android como controle de segurança.
+
+## 10. Testar a integração
+
+### 10.1 Verificar se o backend está no ar
+
+Abra no navegador:
+
+```text
+https://fluej-api.onrender.com/health
+```
+
+A resposta esperada é:
+
+```json
+{"status":"ok"}
+```
+
+Esse endpoint confirma que o serviço está respondendo. Ele não comprova, sozinho, que a conexão com o Supabase ou com a BrasilAPI está funcionando.
+
+### 10.2 Testar uma rota autenticada pelo PowerShell
+
+Obtenha um access token por meio do fluxo de login de um usuário de teste. Em seguida, execute:
+
+```powershell
+$base = "https://fluej-api.onrender.com"
+$token = "ACCESS_TOKEN_DO_USUARIO"
+$headers = @{ Authorization = "Bearer $token" }
+
+Invoke-RestMethod -Method Get `
+  -Uri "$base/v1/notificacoes" `
+  -Headers $headers
+```
+
+Não salve um token real em um arquivo versionado nem o compartilhe em capturas de tela.
+
+### 10.3 Conferir no aplicativo
+
+1. Configure a URL-base correta em `ApiConfig.kt`.
+2. Inicie o aplicativo e faça login com um usuário cadastrado na tabela `perfis`.
+3. Abra a tela que utiliza notificações ou documentos pendentes.
+4. Verifique o Logcat para confirmar o status HTTP e identificar falhas.
+5. Compare a resposta com os DTOs e com os dados cadastrados no Supabase.
+
+O `HttpLoggingInterceptor` em nível `BASIC` exibe informações básicas da requisição. Para investigar o corpo de um erro, prefira registrar temporariamente a mensagem controlada pelo backend, sem expor token, chave ou dados pessoais.
+
+## 11. Códigos HTTP e diagnóstico
+
+| Código | Significado no contexto da integração | Verificação inicial |
+|---|---|---|
+| `200` | Consulta concluída | Conferir se os campos foram convertidos corretamente nos DTOs. |
+| `400` | Parâmetro ou intervalo inválido | Verificar ano, datas e demais valores enviados. |
+| `401` | Token ausente, inválido ou expirado | Confirmar login e presença do cabeçalho `Authorization`. |
+| `403` | Usuário sem perfil ou sem permissão para o recurso | Conferir o registro em `perfis`, o perfil e o setor. |
+| `404` | Recurso ou membro não encontrado | Conferir o identificador enviado. |
+| `422` | Parâmetro não passou pela validação do FastAPI | Conferir tipo, formato e limites dos parâmetros. |
+| `502` | Falha do backend ao consultar um serviço externo ou o banco | Conferir logs do Render, Supabase e BrasilAPI. |
+| `500` | Erro interno ou configuração inválida do servidor | Conferir variáveis de ambiente e logs do backend. |
+
+### 11.1 Erro HTTP 401
+
+Confirme que o usuário realizou login, que há uma sessão ativa e que o interceptor consegue obter o access token. Não tente resolver um `401` substituindo o token do usuário pela chave secreta do Supabase.
+
+### 11.2 Erro HTTP 403
+
+Um token válido não garante que o usuário tenha autorização. Confira se o `sub` do token corresponde ao `user_id` de um registro na tabela `perfis` e se o perfil está entre os valores permitidos pelo backend. Para endpoints restritos por setor, confira também o setor cadastrado.
+
+### 11.3 Erro HTTP 502
+
+Verifique os logs do Render e a configuração do backend. Uma resposta `502` pode ocorrer quando o backend não consegue consultar o Supabase ou quando a BrasilAPI está indisponível e não existe resultado em cache para o ano solicitado.
+
+### 11.4 Falha de conexão
+
+Confirme a URL-base, a conectividade do aparelho, o estado do serviço no Render e os timeouts do OkHttp. Em ambiente local, confirme também o endereço de rede e o firewall.
+
+## 12. Boas práticas de manutenção
+
+- Mantenha a URL de produção em HTTPS.
+- Não inclua chaves secretas do Supabase no aplicativo Android.
+- Não registre access tokens, dados pessoais ou corpos completos de respostas em logs de produção.
+- Mantenha os DTOs sincronizados com os contratos JSON do backend.
+- Faça chamadas de rede em coroutines, fora da thread principal.
+- Trate erros de autenticação e autorização de forma diferente de falhas de conectividade.
+- Atualize a versão do Room e crie migrações compatíveis ao alterar entidades.
+- Separe os dados em cache por usuário e avalie a limpeza no encerramento da sessão.
+- Teste os perfis e os limites de setor no backend; esconder componentes na interface não substitui autorização no servidor.
+- Ao adicionar um endpoint, atualize a interface Retrofit, os DTOs, o Repository, o ViewModel, a tela e os testes correspondentes.
+
+## 13. Referências do projeto
+
+- `ApiConfig.kt`: endereço-base da API.
+- `ApiClient.kt`: configuração de OkHttp, Retrofit e autenticação.
+- `FluejApi.kt`: declaração dos endpoints Retrofit.
+- `ApiModels.kt`: modelos Kotlin das respostas JSON.
+- `ApiCache.kt`: entidade e DAO de cache do Room.
+- `ApiRepository.kt`: consultas e persistência das respostas.
+- `AppDatabase.kt`: configuração do banco local.
+- `SinoNotificacoes.kt`: componente visual do sino de notificações.
+- `NotificacoesViewModel.kt`: estado e carregamento das notificações, conforme a organização adotada no aplicativo.
+- `DashboardViewModel.kt` e `DashboardRHScreen.kt`: integração dos documentos pendentes no dashboard do RH.
+
+Para conhecer as rotas, parâmetros, permissões e respostas do backend, consulte também o `README.md` da pasta `fluej-api` e a documentação interativa do FastAPI em `/docs`.

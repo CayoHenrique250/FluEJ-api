@@ -35,7 +35,8 @@ def _verifier(public_key):
 
 
 def _token(privada, **extra):
-    claims = {"sub": "u-1", "aud": "authenticated", "exp": int(time.time()) + 3600, **extra}
+    claims = {"sub": "u-1", "aud": "authenticated",
+              "exp": int(time.time()) + 3600, **extra}
     return jwt.encode(claims, privada, algorithm="ES256", headers={"kid": "k1"})
 
 

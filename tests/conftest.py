@@ -11,15 +11,19 @@ from app.security import get_verifier
 
 PERFIS = [
     {"user_id": "u-rh", "perfil": "rh", "setor": "RH", "nome": "Gestor de RH"},
-    {"user_id": "u-proj", "perfil": "projetos", "setor": "Projetos", "nome": "Gestor de Projetos"},
-    {"user_id": "u-pres", "perfil": "presidente", "setor": None, "nome": "Presidente"},
-    {"user_id": "u-ori", "perfil": "orientador", "setor": None, "nome": "Orientador"},
+    {"user_id": "u-proj", "perfil": "projetos",
+        "setor": "Projetos", "nome": "Gestor de Projetos"},
+    {"user_id": "u-pres", "perfil": "presidente",
+        "setor": None, "nome": "Presidente"},
+    {"user_id": "u-ori", "perfil": "orientador",
+        "setor": None, "nome": "Orientador"},
 ]
 MEMBERS = [
     {"id": "m1", "nome": "Ana", "cargo": "Assessor", "setor": "RH", "ativo": True},
     {"id": "m2", "nome": "Bia", "cargo": "Gerente", "setor": "RH", "ativo": True},
     {"id": "m3", "nome": "Caio", "cargo": "Diretor", "setor": "RH", "ativo": False},
-    {"id": "m4", "nome": "Davi", "cargo": "Trainee", "setor": "Projetos", "ativo": True},
+    {"id": "m4", "nome": "Davi", "cargo": "Trainee",
+        "setor": "Projetos", "ativo": True},
 ]
 ATIVIDADES = [
     {"member_id": "m1", "data": "2026-11-02", "pontos": 120},
@@ -29,13 +33,17 @@ ATIVIDADES = [
     {"member_id": "m4", "data": "2026-11-04", "pontos": 90},
 ]
 AVISOS = [
-    {"id": "a1", "titulo": "Geral", "mensagem": "p/ todos", "setor": None, "criado_em": "2026-11-01T10:00:00+00:00"},
-    {"id": "a2", "titulo": "Só RH", "mensagem": "rh", "setor": "RH", "criado_em": "2026-11-02T10:00:00+00:00"},
-    {"id": "a3", "titulo": "Só Projetos", "mensagem": "proj", "setor": "Projetos", "criado_em": "2026-11-02T11:00:00+00:00"},
+    {"id": "a1", "titulo": "Geral", "mensagem": "p/ todos",
+        "setor": None, "criado_em": "2026-11-01T10:00:00+00:00"},
+    {"id": "a2", "titulo": "Só RH", "mensagem": "rh",
+        "setor": "RH", "criado_em": "2026-11-02T10:00:00+00:00"},
+    {"id": "a3", "titulo": "Só Projetos", "mensagem": "proj",
+        "setor": "Projetos", "criado_em": "2026-11-02T11:00:00+00:00"},
 ]
 DOCS = [
     {"id": "d1", "setor": "RH", "titulo": "Termos de voluntariado", "quantidade": 2},
-    {"id": "d2", "setor": "Projetos", "titulo": "Termos de encerramento", "quantidade": 1},
+    {"id": "d2", "setor": "Projetos",
+        "titulo": "Termos de encerramento", "quantidade": 1},
 ]
 PROJETOS = [
     {"id": "p1", "nome": "Feira", "total_pontos": 100, "setor": "RH"},
@@ -82,9 +90,11 @@ class FakeVerifier:
 class FakeHolidays(HolidayService):
     def do_ano(self, ano):
         return [
-            {"data": f"{ano}-11-15", "nome": "Proclamação da República", "tipo": "national"},
+            {"data": f"{ano}-11-15",
+                "nome": "Proclamação da República", "tipo": "national"},
             {"data": f"{ano}-12-25", "nome": "Natal", "tipo": "national"},
-            {"data": f"{ano}-01-01", "nome": "Confraternização Universal", "tipo": "national"},
+            {"data": f"{ano}-01-01",
+                "nome": "Confraternização Universal", "tipo": "national"},
         ]
 
 

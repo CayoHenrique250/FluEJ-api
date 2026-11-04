@@ -15,15 +15,16 @@ def test_token_invalido_401(client):
 
 
 def test_usuario_sem_perfil_403(client):
-    assert client.get("/v1/painel", headers=auth("semperfil")).status_code == 403
+    assert client.get("/v1/painel", headers=auth("semperfil")
+                      ).status_code == 403
 
 
 def test_ranking_rh_ordem_crescente_e_so_ativos(client):
     r = client.get("/v1/ranking", headers=auth("rh")).json()
     nomes = [i["nome"] for i in r["itens"]]
-    assert nomes == ["Bia", "Ana"]       
-    assert r["itens"][1]["pontos"] == 120    
-    assert r["itens"][1]["horas"] == 2.0    
+    assert nomes == ["Bia", "Ana"]
+    assert r["itens"][1]["pontos"] == 120
+    assert r["itens"][1]["horas"] == 2.0
 
 
 def test_ranking_gestor_nao_escapa_do_proprio_setor(client):
@@ -33,20 +34,23 @@ def test_ranking_gestor_nao_escapa_do_proprio_setor(client):
 
 
 def test_ranking_presidente_filtra_setor_e_ordem_desc(client):
-    r = client.get("/v1/ranking?setor=RH&ordem=desc", headers=auth("pres")).json()
+    r = client.get("/v1/ranking?setor=RH&ordem=desc",
+                   headers=auth("pres")).json()
     assert [i["nome"] for i in r["itens"]] == ["Ana", "Bia"]
     todos = client.get("/v1/ranking", headers=auth("pres")).json()
     assert {i["setor"] for i in todos["itens"]} == {"RH", "Projetos"}
 
 
 def test_ranking_intervalo_personalizado(client):
-    r = client.get("/v1/ranking?inicio=2026-10-01&fim=2026-10-31", headers=auth("pres")).json()
+    r = client.get("/v1/ranking?inicio=2026-10-01&fim=2026-10-31",
+                   headers=auth("pres")).json()
     pontos = {i["nome"]: i["pontos"] for i in r["itens"]}
     assert pontos["Ana"] == 60
 
 
 def test_ranking_intervalo_invalido(client):
-    r = client.get("/v1/ranking?inicio=2026-11-10&fim=2026-11-01", headers=auth("pres"))
+    r = client.get("/v1/ranking?inicio=2026-11-10&fim=2026-11-01",
+                   headers=auth("pres"))
     assert r.status_code == 400
 
 
@@ -82,7 +86,8 @@ def test_notificacoes_inclui_feriado_proximo_e_avisos_do_setor(client):
 
 
 def test_notificacoes_presidente_ve_todos_os_avisos(client):
-    titulos = [i["titulo"] for i in client.get("/v1/notificacoes", headers=auth("pres")).json()["itens"]]
+    titulos = [i["titulo"] for i in client.get(
+        "/v1/notificacoes", headers=auth("pres")).json()["itens"]]
     assert {"Só RH", "Só Projetos", "Geral"} <= set(titulos)
 
 
@@ -95,7 +100,8 @@ def test_feriados_proximos_atravessa_o_ano(client, monkeypatch):
 
 
 def test_feriados_ano_invalido(client):
-    assert client.get("/v1/feriados/1800", headers=auth("rh")).status_code == 400
+    assert client.get("/v1/feriados/1800",
+                      headers=auth("rh")).status_code == 400
     assert len(client.get("/v1/feriados/2026", headers=auth("rh")).json()) == 3
 
 
@@ -107,11 +113,16 @@ def test_desempenho_membro(client):
 
 
 def test_desempenho_gestor_de_projetos_so_ve_o_proprio_setor(client):
-    assert client.get("/v1/membros/m1/desempenho", headers=auth("proj")).status_code == 403  # membro de RH
-    assert client.get("/v1/membros/m4/desempenho", headers=auth("proj")).status_code == 200
+    assert client.get("/v1/membros/m1/desempenho",
+                      headers=auth("proj")).status_code == 403  # membro de RH
+    assert client.get("/v1/membros/m4/desempenho",
+                      headers=auth("proj")).status_code == 200
 
 
 def test_desempenho_rh_e_presidente_veem_qualquer_membro(client):
-    assert client.get("/v1/membros/m4/desempenho", headers=auth("rh")).status_code == 200
-    assert client.get("/v1/membros/m4/desempenho", headers=auth("pres")).status_code == 200
-    assert client.get("/v1/membros/zzz/desempenho", headers=auth("pres")).status_code == 404
+    assert client.get("/v1/membros/m4/desempenho",
+                      headers=auth("rh")).status_code == 200
+    assert client.get("/v1/membros/m4/desempenho",
+                      headers=auth("pres")).status_code == 200
+    assert client.get("/v1/membros/zzz/desempenho",
+                      headers=auth("pres")).status_code == 404
